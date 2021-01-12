@@ -148,7 +148,7 @@ class Init(object):
         util.ensure_dirs(self._initial_subdirs())
         log_file = util.get_cfg_option_str(self.cfg, 'def_log_file')
         if log_file:
-            util.ensure_file(log_file)
+            util.ensure_file(log_file, preserve_mode=True)
             perms = self.cfg.get('syslog_fix_perms')
             if not perms:
                 perms = {}
@@ -696,7 +696,7 @@ class Init(object):
                     netcfg, src = self._find_networking_config()
 
         # ensure all physical devices in config are present
-        net.wait_for_physdevs(netcfg)
+        self.distro.networking.wait_for_physdevs(netcfg)
 
         # apply renames from config
         self._apply_netcfg_names(netcfg)
@@ -947,7 +947,6 @@ def _pkl_load(fname):
     except Exception as e:
         if os.path.isfile(fname):
             LOG.warning("failed loading pickle in %s: %s", fname, e)
-        pass
 
     # This is allowed so just return nothing successfully loaded...
     if not pickle_contents:

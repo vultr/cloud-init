@@ -6,6 +6,7 @@
 
 import time
 
+from cloudinit import dmi
 from cloudinit import log as logging
 from cloudinit.net.dhcp import EphemeralDHCPv4, NoDHCPLeaseError
 from cloudinit import sources
@@ -29,7 +30,11 @@ DMI_PRODUCT_NOVA = 'OpenStack Nova'
 DMI_PRODUCT_COMPUTE = 'OpenStack Compute'
 VALID_DMI_PRODUCT_NAMES = [DMI_PRODUCT_NOVA, DMI_PRODUCT_COMPUTE]
 DMI_ASSET_TAG_OPENTELEKOM = 'OpenTelekomCloud'
-VALID_DMI_ASSET_TAGS = [DMI_ASSET_TAG_OPENTELEKOM]
+# See github.com/sapcc/helm-charts/blob/master/openstack/nova/values.yaml
+# -> compute.defaults.vmware.smbios_asset_tag for this value
+DMI_ASSET_TAG_SAPCCLOUD = 'SAP CCloud VM'
+VALID_DMI_ASSET_TAGS = VALID_DMI_PRODUCT_NAMES
+VALID_DMI_ASSET_TAGS += [DMI_ASSET_TAG_OPENTELEKOM, DMI_ASSET_TAG_SAPCCLOUD]
 
 
 class DataSourceOpenStack(openstack.SourceMixin, sources.DataSource):
@@ -191,10 +196,10 @@ class DataSourceOpenStack(openstack.SourceMixin, sources.DataSource):
                         'timeout': url_params.timeout_seconds})
         except openstack.NonReadable as e:
             raise sources.InvalidMetaDataException(str(e))
-        except (openstack.BrokenMetadata, IOError):
+        except (openstack.BrokenMetadata, IOError) as e:
             msg = 'Broken metadata address {addr}'.format(
                 addr=self.metadata_address)
-            raise sources.InvalidMetaDataException(msg)
+            raise sources.InvalidMetaDataException(msg) from e
         return result
 
 
@@ -221,10 +226,10 @@ def detect_openstack(accept_oracle=False):
     """Return True when a potential OpenStack platform is detected."""
     if not util.is_x86():
         return True  # Non-Intel cpus don't properly report dmi product names
-    product_name = util.read_dmi_data('system-product-name')
+    product_name = dmi.read_dmi_data('system-product-name')
     if product_name in VALID_DMI_PRODUCT_NAMES:
         return True
-    elif util.read_dmi_data('chassis-asset-tag') in VALID_DMI_ASSET_TAGS:
+    elif dmi.read_dmi_data('chassis-asset-tag') in VALID_DMI_ASSET_TAGS:
         return True
     elif accept_oracle and oracle._is_platform_viable():
         return True

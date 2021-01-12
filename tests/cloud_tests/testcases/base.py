@@ -5,15 +5,15 @@
 import crypt
 import json
 import re
-import unittest2
+import unittest
 
 
 from cloudinit import util as c_util
 
-SkipTest = unittest2.SkipTest
+SkipTest = unittest.SkipTest
 
 
-class CloudTestCase(unittest2.TestCase):
+class CloudTestCase(unittest.TestCase):
     """Base test class for verifiers."""
 
     # data gets populated in get_suite.setUpClass
@@ -34,7 +34,6 @@ class CloudTestCase(unittest2.TestCase):
     @classmethod
     def maybeSkipTest(cls):
         """Present to allow subclasses to override and raise a skipTest."""
-        pass
 
     def assertPackageInstalled(self, name, version=None):
         """Check dpkg-query --show output for matching package name.
@@ -141,8 +140,8 @@ class CloudTestCase(unittest2.TestCase):
     def test_no_warnings_in_log(self):
         """Unexpected warnings should not be found in the log."""
         warnings = [
-            l for l in self.get_data_file('cloud-init.log').splitlines()
-            if 'WARN' in l]
+            line for line in self.get_data_file('cloud-init.log').splitlines()
+            if 'WARN' in line]
         joined_warnings = '\n'.join(warnings)
         for expected_warning in self.expected_warnings:
             self.assertIn(
@@ -172,7 +171,7 @@ class CloudTestCase(unittest2.TestCase):
                 'Skipping instance-data.json test.'
                 ' OS: %s not bionic or newer' % self.os_name)
         instance_data = json.loads(out)
-        self.assertItemsEqual(['ci_cfg'], instance_data['sensitive_keys'])
+        self.assertCountEqual(['merged_cfg'], instance_data['sensitive_keys'])
         ds = instance_data.get('ds', {})
         v1_data = instance_data.get('v1', {})
         metadata = ds.get('meta-data', {})
@@ -237,7 +236,7 @@ class CloudTestCase(unittest2.TestCase):
                 ' OS: %s not bionic or newer' % self.os_name)
         instance_data = json.loads(out)
         v1_data = instance_data.get('v1', {})
-        self.assertItemsEqual([], sorted(instance_data['base64_encoded_keys']))
+        self.assertCountEqual([], sorted(instance_data['base64_encoded_keys']))
         self.assertEqual('unknown', v1_data['cloud_name'])
         self.assertEqual('lxd', v1_data['platform'])
         self.assertEqual(
@@ -291,7 +290,7 @@ class CloudTestCase(unittest2.TestCase):
                 ' OS: %s not bionic or newer' % self.os_name)
         instance_data = json.loads(out)
         v1_data = instance_data.get('v1', {})
-        self.assertItemsEqual([], instance_data['base64_encoded_keys'])
+        self.assertCountEqual([], instance_data['base64_encoded_keys'])
         self.assertEqual('unknown', v1_data['cloud_name'])
         self.assertEqual('nocloud', v1_data['platform'])
         subplatform = v1_data['subplatform']
@@ -321,7 +320,7 @@ class CloudTestCase(unittest2.TestCase):
             "Unexpected sys_info dist value")
         self.assertEqual(self.os_name, v1_data['distro_release'])
         self.assertEqual(
-                str(self.os_cfg['version']), v1_data['distro_version'])
+            str(self.os_cfg['version']), v1_data['distro_version'])
         self.assertEqual('x86_64', v1_data['machine'])
         self.assertIsNotNone(
             re.match(r'3.\d\.\d', v1_data['python_version']),

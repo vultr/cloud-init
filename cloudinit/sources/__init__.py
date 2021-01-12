@@ -14,6 +14,7 @@ import json
 import os
 from collections import namedtuple
 
+from cloudinit import dmi
 from cloudinit import importer
 from cloudinit import log as logging
 from cloudinit import net
@@ -78,7 +79,6 @@ class DataSourceNotFoundException(Exception):
 
 class InvalidMetaDataException(Exception):
     """Raised when metadata is broken, unavailable or disabled."""
-    pass
 
 
 def process_instance_metadata(metadata, key_path='', sensitive_keys=()):
@@ -511,7 +511,6 @@ class DataSource(metaclass=abc.ABCMeta):
             (e.g. 'ssh-rsa') and key_value is the key itself
             (e.g. 'AAAAB3NzaC1y...').
         """
-        pass
 
     def _remap_device(self, short_name):
         # LP: #611137
@@ -602,7 +601,7 @@ class DataSource(metaclass=abc.ABCMeta):
             # if there is an ipv4 address in 'local-hostname', then
             # make up a hostname (LP: #475354) in format ip-xx.xx.xx.xx
             lhost = self.metadata['local-hostname']
-            if util.is_ipv4(lhost):
+            if net.is_ipv4_address(lhost):
                 toks = []
                 if resolve_ip:
                     toks = util.gethostbyaddr(lhost)
@@ -811,7 +810,7 @@ def instance_id_matches_system_uuid(instance_id, field='system-uuid'):
     if not instance_id:
         return False
 
-    dmi_value = util.read_dmi_data(field)
+    dmi_value = dmi.read_dmi_data(field)
     if not dmi_value:
         return False
     return instance_id.lower() == dmi_value.lower()

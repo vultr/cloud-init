@@ -9,6 +9,7 @@
 from cloudinit import distros
 from cloudinit import helpers
 from cloudinit import log as logging
+from cloudinit import subp
 from cloudinit import util
 
 from cloudinit.distros import net_util
@@ -39,7 +40,7 @@ class Distro(distros.Distro):
     def apply_locale(self, locale, out_fn=None):
         if not out_fn:
             out_fn = self.locale_conf_fn
-        util.subp(['locale-gen', '-G', locale], capture=False)
+        subp.subp(['locale-gen', '-G', locale], capture=False)
         # "" provides trailing newline during join
         lines = [
             util.make_header(),
@@ -94,11 +95,11 @@ class Distro(distros.Distro):
                 cmd = ['rc-update', 'add', 'net.{name}'.format(name=dev),
                        'default']
                 try:
-                    (_out, err) = util.subp(cmd)
+                    (_out, err) = subp.subp(cmd)
                     if len(err):
                         LOG.warning("Running %s resulted in stderr output: %s",
                                     cmd, err)
-                except util.ProcessExecutionError:
+                except subp.ProcessExecutionError:
                     util.logexc(LOG, "Running interface command %s failed",
                                 cmd)
 
@@ -119,12 +120,12 @@ class Distro(distros.Distro):
         LOG.debug("Attempting to run bring up interface %s using command %s",
                   device_name, cmd)
         try:
-            (_out, err) = util.subp(cmd)
+            (_out, err) = subp.subp(cmd)
             if len(err):
                 LOG.warning("Running %s resulted in stderr output: %s",
                             cmd, err)
             return True
-        except util.ProcessExecutionError:
+        except subp.ProcessExecutionError:
             util.logexc(LOG, "Running interface command %s failed", cmd)
             return False
 
@@ -137,11 +138,11 @@ class Distro(distros.Distro):
             # Grab device names from init scripts
             cmd = ['ls', '/etc/init.d/net.*']
             try:
-                (_out, err) = util.subp(cmd)
+                (_out, err) = subp.subp(cmd)
                 if len(err):
                     LOG.warning("Running %s resulted in stderr output: %s",
                                 cmd, err)
-            except util.ProcessExecutionError:
+            except subp.ProcessExecutionError:
                 util.logexc(LOG, "Running interface command %s failed", cmd)
                 return False
             devices = [x.split('.')[2] for x in _out.split('  ')]
@@ -159,10 +160,12 @@ class Distro(distros.Distro):
             pass
         if not conf:
             conf = HostnameConf('')
-        conf.set_hostname(your_hostname)
-        gentoo_hostname_config = 'hostname="%s"' % conf
-        gentoo_hostname_config = gentoo_hostname_config.replace('\n', '')
-        util.write_file(out_fn, gentoo_hostname_config, 0o644)
+
+        # Many distro's format is the hostname by itself, and that is the
+        # way HostnameConf works but gentoo expects it to be in
+        #     hostname="the-actual-hostname"
+        conf.set_hostname('hostname="%s"' % your_hostname)
+        util.write_file(out_fn, str(conf), 0o644)
 
     def _read_system_hostname(self):
         sys_hostname = self._read_hostname(self.hostname_conf_fn)
@@ -208,7 +211,7 @@ class Distro(distros.Distro):
         cmd.extend(pkglist)
 
         # Allow the output of this to flow outwards (ie not be captured)
-        util.subp(cmd, capture=False)
+        subp.subp(cmd, capture=False)
 
     def update_package_sources(self):
         self._runner.run("update-sources", self.package_command,

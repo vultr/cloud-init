@@ -14,7 +14,9 @@ import os
 import shutil
 import tempfile
 
+from cloudinit import dmi
 from cloudinit import helpers
+from cloudinit import subp
 from cloudinit import util
 
 from cloudinit.tests.helpers import CiTestCase, mock
@@ -87,14 +89,14 @@ class TestGetCloudType(CiTestCase):
         super(TestGetCloudType, self).setUp()
         self.tmp = self.tmp_dir()
         self.paths = helpers.Paths({'cloud_dir': self.tmp})
-        self.dmi_data = util.read_dmi_data
+        self.dmi_data = dmi.read_dmi_data
         # We have a different code path for arm to deal with LP1243287
         # We have to switch arch to x86_64 to avoid test failure
         force_arch('x86_64')
 
     def tearDown(self):
         # Reset
-        util.read_dmi_data = self.dmi_data
+        dmi.read_dmi_data = self.dmi_data
         force_arch()
 
     def test_cloud_info_file_ioerror(self):
@@ -122,7 +124,7 @@ class TestGetCloudType(CiTestCase):
         Test method get_cloud_type() for RHEVm systems.
         Forcing read_dmi_data return to match a RHEVm system: RHEV Hypervisor
         '''
-        util.read_dmi_data = _dmi_data('RHEV')
+        dmi.read_dmi_data = _dmi_data('RHEV')
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual('RHEV', dsrc.get_cloud_type())
 
@@ -131,7 +133,7 @@ class TestGetCloudType(CiTestCase):
         Test method get_cloud_type() for vSphere systems.
         Forcing read_dmi_data return to match a vSphere system: RHEV Hypervisor
         '''
-        util.read_dmi_data = _dmi_data('VMware Virtual Platform')
+        dmi.read_dmi_data = _dmi_data('VMware Virtual Platform')
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual('VSPHERE', dsrc.get_cloud_type())
 
@@ -140,7 +142,7 @@ class TestGetCloudType(CiTestCase):
         Test method get_cloud_type() for unknown systems.
         Forcing read_dmi_data return to match an unrecognized return.
         '''
-        util.read_dmi_data = _dmi_data('Unrecognized Platform')
+        dmi.read_dmi_data = _dmi_data('Unrecognized Platform')
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual('UNKNOWN', dsrc.get_cloud_type())
 
@@ -218,7 +220,7 @@ class TestGetDataNoCloudInfoFile(CiTestCase):
         self.tmp = self.tmp_dir()
         self.paths = helpers.Paths(
             {'cloud_dir': self.tmp, 'run_dir': self.tmp})
-        self.dmi_data = util.read_dmi_data
+        self.dmi_data = dmi.read_dmi_data
         dsac.CLOUD_INFO_FILE = \
             'no such file'
         # We have a different code path for arm to deal with LP1243287
@@ -229,14 +231,14 @@ class TestGetDataNoCloudInfoFile(CiTestCase):
         # Reset
         dsac.CLOUD_INFO_FILE = \
             '/etc/sysconfig/cloud-info'
-        util.read_dmi_data = self.dmi_data
+        dmi.read_dmi_data = self.dmi_data
         # Return back to original arch
         force_arch()
 
     def test_rhev_no_cloud_file(self):
         '''Test No cloud info file module get_data() forcing RHEV.'''
 
-        util.read_dmi_data = _dmi_data('RHEV Hypervisor')
+        dmi.read_dmi_data = _dmi_data('RHEV Hypervisor')
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         dsrc.user_data_rhevm = lambda: True
         self.assertEqual(True, dsrc.get_data())
@@ -244,7 +246,7 @@ class TestGetDataNoCloudInfoFile(CiTestCase):
     def test_vsphere_no_cloud_file(self):
         '''Test No cloud info file module get_data() forcing VSPHERE.'''
 
-        util.read_dmi_data = _dmi_data('VMware Virtual Platform')
+        dmi.read_dmi_data = _dmi_data('VMware Virtual Platform')
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         dsrc.user_data_vsphere = lambda: True
         self.assertEqual(True, dsrc.get_data())
@@ -252,7 +254,7 @@ class TestGetDataNoCloudInfoFile(CiTestCase):
     def test_failure_no_cloud_file(self):
         '''Test No cloud info file module get_data() forcing unrecognized.'''
 
-        util.read_dmi_data = _dmi_data('Unrecognized Platform')
+        dmi.read_dmi_data = _dmi_data('Unrecognized Platform')
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual(False, dsrc.get_data())
 
@@ -286,7 +288,7 @@ class TestUserDataRhevm(CiTestCase):
     def test_modprobe_fails(self):
         '''Test user_data_rhevm() where modprobe fails.'''
 
-        self.m_modprobe_floppy.side_effect = util.ProcessExecutionError(
+        self.m_modprobe_floppy.side_effect = subp.ProcessExecutionError(
             "Failed modprobe")
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual(False, dsrc.user_data_rhevm())
@@ -294,7 +296,7 @@ class TestUserDataRhevm(CiTestCase):
     def test_no_modprobe_cmd(self):
         '''Test user_data_rhevm() with no modprobe command.'''
 
-        self.m_modprobe_floppy.side_effect = util.ProcessExecutionError(
+        self.m_modprobe_floppy.side_effect = subp.ProcessExecutionError(
             "No such file or dir")
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual(False, dsrc.user_data_rhevm())
@@ -302,7 +304,7 @@ class TestUserDataRhevm(CiTestCase):
     def test_udevadm_fails(self):
         '''Test user_data_rhevm() where udevadm fails.'''
 
-        self.m_udevadm_settle.side_effect = util.ProcessExecutionError(
+        self.m_udevadm_settle.side_effect = subp.ProcessExecutionError(
             "Failed settle.")
         dsrc = dsac.DataSourceAltCloud({}, None, self.paths)
         self.assertEqual(False, dsrc.user_data_rhevm())

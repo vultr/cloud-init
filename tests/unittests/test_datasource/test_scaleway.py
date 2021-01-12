@@ -87,7 +87,7 @@ class TestOnScaleway(CiTestCase):
 
     @mock.patch('cloudinit.util.get_cmdline')
     @mock.patch('os.path.exists')
-    @mock.patch('cloudinit.util.read_dmi_data')
+    @mock.patch('cloudinit.dmi.read_dmi_data')
     def test_not_on_scaleway(self, m_read_dmi_data, m_file_exists,
                              m_get_cmdline):
         self.install_mocks(
@@ -105,7 +105,7 @@ class TestOnScaleway(CiTestCase):
 
     @mock.patch('cloudinit.util.get_cmdline')
     @mock.patch('os.path.exists')
-    @mock.patch('cloudinit.util.read_dmi_data')
+    @mock.patch('cloudinit.dmi.read_dmi_data')
     def test_on_scaleway_dmi(self, m_read_dmi_data, m_file_exists,
                              m_get_cmdline):
         """
@@ -121,7 +121,7 @@ class TestOnScaleway(CiTestCase):
 
     @mock.patch('cloudinit.util.get_cmdline')
     @mock.patch('os.path.exists')
-    @mock.patch('cloudinit.util.read_dmi_data')
+    @mock.patch('cloudinit.dmi.read_dmi_data')
     def test_on_scaleway_var_run_scaleway(self, m_read_dmi_data, m_file_exists,
                                           m_get_cmdline):
         """
@@ -136,7 +136,7 @@ class TestOnScaleway(CiTestCase):
 
     @mock.patch('cloudinit.util.get_cmdline')
     @mock.patch('os.path.exists')
-    @mock.patch('cloudinit.util.read_dmi_data')
+    @mock.patch('cloudinit.dmi.read_dmi_data')
     def test_on_scaleway_cmdline(self, m_read_dmi_data, m_file_exists,
                                  m_get_cmdline):
         """
@@ -353,12 +353,16 @@ class TestDataSourceScaleway(HttprettyTestCase):
         self.datasource.metadata['ipv6'] = None
 
         netcfg = self.datasource.network_config
-        resp = {'version': 1,
-                'config': [{
-                     'type': 'physical',
-                     'name': 'ens2',
-                     'subnets': [{'type': 'dhcp4'}]}]
+        resp = {
+            'version': 1,
+            'config': [
+                {
+                    'type': 'physical',
+                    'name': 'ens2',
+                    'subnets': [{'type': 'dhcp4'}]
                 }
+            ]
+        }
         self.assertEqual(netcfg, resp)
 
     @mock.patch('cloudinit.sources.DataSourceScaleway.net.find_fallback_nic')
@@ -371,25 +375,32 @@ class TestDataSourceScaleway(HttprettyTestCase):
         m_get_cmdline.return_value = 'scaleway'
         fallback_nic.return_value = 'ens2'
         self.datasource.metadata['ipv6'] = {
-                'address': '2000:abc:4444:9876::42:999',
-                'gateway': '2000:abc:4444:9876::42:000',
-                'netmask': '127',
-                }
+            'address': '2000:abc:4444:9876::42:999',
+            'gateway': '2000:abc:4444:9876::42:000',
+            'netmask': '127',
+        }
 
         netcfg = self.datasource.network_config
-        resp = {'version': 1,
-                'config': [{
-                     'type': 'physical',
-                     'name': 'ens2',
-                     'subnets': [{'type': 'dhcp4'},
-                                 {'type': 'static',
-                                  'address': '2000:abc:4444:9876::42:999',
-                                  'gateway': '2000:abc:4444:9876::42:000',
-                                  'netmask': '127', }
-                                 ]
-
-                     }]
+        resp = {
+            'version': 1,
+            'config': [
+                {
+                    'type': 'physical',
+                    'name': 'ens2',
+                    'subnets': [
+                        {
+                            'type': 'dhcp4'
+                        },
+                        {
+                            'type': 'static',
+                            'address': '2000:abc:4444:9876::42:999',
+                            'gateway': '2000:abc:4444:9876::42:000',
+                            'netmask': '127',
+                        }
+                    ]
                 }
+            ]
+        }
         self.assertEqual(netcfg, resp)
 
     @mock.patch('cloudinit.sources.DataSourceScaleway.net.find_fallback_nic')
@@ -417,12 +428,16 @@ class TestDataSourceScaleway(HttprettyTestCase):
         self.datasource.metadata['ipv6'] = None
         self.datasource._network_config = sources.UNSET
 
-        resp = {'version': 1,
-                'config': [{
-                     'type': 'physical',
-                     'name': 'ens2',
-                     'subnets': [{'type': 'dhcp4'}]}]
+        resp = {
+            'version': 1,
+            'config': [
+                {
+                    'type': 'physical',
+                    'name': 'ens2',
+                    'subnets': [{'type': 'dhcp4'}]
                 }
+            ]
+        }
 
         netcfg = self.datasource.network_config
         self.assertEqual(netcfg, resp)
@@ -441,12 +456,16 @@ class TestDataSourceScaleway(HttprettyTestCase):
         self.datasource.metadata['ipv6'] = None
         self.datasource._network_config = None
 
-        resp = {'version': 1,
-                'config': [{
-                     'type': 'physical',
-                     'name': 'ens2',
-                     'subnets': [{'type': 'dhcp4'}]}]
+        resp = {
+            'version': 1,
+            'config': [
+                {
+                    'type': 'physical',
+                    'name': 'ens2',
+                    'subnets': [{'type': 'dhcp4'}]
                 }
+            ]
+        }
 
         netcfg = self.datasource.network_config
         self.assertEqual(netcfg, resp)

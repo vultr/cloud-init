@@ -15,6 +15,7 @@ import os.path
 
 from cloudinit import log as logging
 from cloudinit import sources
+from cloudinit import subp
 from cloudinit import util
 from cloudinit.event import EventType
 
@@ -43,11 +44,11 @@ def int2ip(addr):
 
 def _sub_arp(cmd):
     """
-    Uses the prefered cloud-init subprocess def of util.subp
+    Uses the preferred cloud-init subprocess def of subp.subp
     and runs arping.  Breaking this to a separate function
     for later use in mocking and unittests
     """
-    return util.subp(['arping'] + cmd)
+    return subp.subp(['arping'] + cmd)
 
 
 def gratuitous_arp(items, distro):
@@ -55,39 +56,47 @@ def gratuitous_arp(items, distro):
     if distro.name in ['fedora', 'centos', 'rhel']:
         source_param = '-s'
     for item in items:
-        _sub_arp([
-            '-c', '2',
-            source_param, item['source'],
-            item['destination']
-        ])
+        try:
+            _sub_arp([
+                '-c', '2',
+                source_param, item['source'],
+                item['destination']
+            ])
+        except subp.ProcessExecutionError as error:
+            # warning, because the system is able to function properly
+            # despite no success - some ARP table may be waiting for
+            # expiration, but the system may continue
+            LOG.warning('Failed to arping from "%s" to "%s": %s',
+                        item['source'], item['destination'], error)
 
 
 def get_md():
-    rbx_data = None
-    devices = [
-        dev
-        for dev, bdata in util.blkid().items()
-        if bdata.get('LABEL', '').upper() == 'CLOUDMD'
-    ]
+    """Returns False (not found or error) or a dictionary with metadata."""
+    devices = set(
+        util.find_devs_with('LABEL=CLOUDMD') +
+        util.find_devs_with('LABEL=cloudmd')
+    )
+    if not devices:
+        return False
     for device in devices:
         try:
             rbx_data = util.mount_cb(
                 device=device,
                 callback=read_user_data_callback,
-                mtype=['vfat', 'fat']
+                mtype=['vfat', 'fat', 'msdosfs']
             )
             if rbx_data:
-                break
+                return rbx_data
         except OSError as err:
             if err.errno != errno.ENOENT:
                 raise
         except util.MountFailedError:
             util.logexc(LOG, "Failed to mount %s when looking for user "
                              "data", device)
-    if not rbx_data:
-        util.logexc(LOG, "Failed to load metadata and userdata")
-        return False
-    return rbx_data
+
+    LOG.debug("Did not find RbxCloud data, searched devices: %s",
+              ",".join(devices))
+    return False
 
 
 def generate_network_config(netadps):
@@ -182,7 +191,6 @@ def read_user_data_callback(mount_dir):
                     'passwd': hash,
                     'lock_passwd': False,
                     'ssh_authorized_keys': ssh_keys,
-                    'shell': '/bin/bash'
                 }
             },
             'network_config': network,
@@ -217,6 +225,8 @@ class DataSourceRbxCloud(sources.DataSource):
         is used to perform instance configuration.
         """
         rbx_data = get_md()
+        if rbx_data is False:
+            return False
         self.userdata_raw = rbx_data['userdata']
         self.metadata = rbx_data['metadata']
         self.gratuitous_arp = rbx_data['gratuitous_arp']

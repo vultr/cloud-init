@@ -7,6 +7,7 @@ import json
 
 from base64 import b64decode
 
+from cloudinit import dmi
 from cloudinit.distros import ug_util
 from cloudinit import log as logging
 from cloudinit import sources
@@ -116,7 +117,7 @@ def _write_host_key_to_guest_attributes(key_type, key_value):
     resp = url_helper.readurl(url=url, data=key_value, headers=HEADERS,
                               request_method='PUT', check_status=False)
     if resp.ok():
-        LOG.debug('Wrote %s host key to guest attributes.',  key_type)
+        LOG.debug('Wrote %s host key to guest attributes.', key_type)
     else:
         LOG.debug('Unable to write %s host key to guest attributes.', key_type)
 
@@ -248,12 +249,12 @@ def read_md(address=None, platform_check=True):
 
 
 def platform_reports_gce():
-    pname = util.read_dmi_data('system-product-name') or "N/A"
+    pname = dmi.read_dmi_data('system-product-name') or "N/A"
     if pname == "Google Compute Engine":
         return True
 
     # system-product-name is not always guaranteed (LP: #1674861)
-    serial = util.read_dmi_data('system-serial-number') or "N/A"
+    serial = dmi.read_dmi_data('system-serial-number') or "N/A"
     if serial.startswith("GoogleCloud-"):
         return True
 

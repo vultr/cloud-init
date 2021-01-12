@@ -68,12 +68,14 @@ Having trouble? We would like to help!
    :caption: Development
 
    topics/hacking.rst
+   topics/code_review.rst
    topics/security.rst
    topics/debugging.rst
    topics/logging.rst
    topics/dir_layout.rst
    topics/analyze.rst
    topics/docs.rst
-   topics/tests.rst
+   topics/integration_tests.rst
+   topics/cloud_tests.rst
 
 .. vi: textwidth=79

@@ -9,9 +9,10 @@ import codecs
 from cloudinit.sources.helpers.netlink import (
     NetlinkCreateSocketError, create_bound_netlink_socket, read_netlink_socket,
     read_rta_oper_state, unpack_rta_attr, wait_for_media_disconnect_connect,
+    wait_for_nic_attach_event, wait_for_nic_detach_event,
     OPER_DOWN, OPER_UP, OPER_DORMANT, OPER_LOWERLAYERDOWN, OPER_NOTPRESENT,
-    OPER_TESTING, OPER_UNKNOWN, RTATTR_START_OFFSET, RTM_NEWLINK, RTM_SETLINK,
-    RTM_GETLINK, MAX_SIZE)
+    OPER_TESTING, OPER_UNKNOWN, RTATTR_START_OFFSET, RTM_NEWLINK, RTM_DELLINK,
+    RTM_SETLINK, RTM_GETLINK, MAX_SIZE)
 
 
 def int_to_bytes(i):
@@ -87,7 +88,7 @@ class TestParseNetlinkMessage(CiTestCase):
         data = None
         with self.assertRaises(AssertionError) as context:
             read_rta_oper_state(data)
-        self.assertTrue('data is none', str(context.exception))
+        self.assertEqual('data is none', str(context.exception))
 
     def test_read_invalid_rta_operstate_none(self):
         '''read_rta_oper_state returns none if operstate is none'''
@@ -131,6 +132,75 @@ class TestParseNetlinkMessage(CiTestCase):
             unpack_rta_attr(data, 31)
         self.assertTrue('rta offset is less than expected length' in
                         str(context.exception))
+
+
+@mock.patch('cloudinit.sources.helpers.netlink.socket.socket')
+@mock.patch('cloudinit.sources.helpers.netlink.read_netlink_socket')
+class TestNicAttachDetach(CiTestCase):
+    with_logs = True
+
+    def _media_switch_data(self, ifname, msg_type, operstate):
+        '''construct netlink data with specified fields'''
+        if ifname and operstate is not None:
+            data = bytearray(48)
+            bytes = ifname.encode("utf-8")
+            struct.pack_into("HH4sHHc", data, RTATTR_START_OFFSET, 8, 3,
+                             bytes, 5, 16, int_to_bytes(operstate))
+        elif ifname:
+            data = bytearray(40)
+            bytes = ifname.encode("utf-8")
+            struct.pack_into("HH4s", data, RTATTR_START_OFFSET, 8, 3, bytes)
+        elif operstate:
+            data = bytearray(40)
+            struct.pack_into("HHc", data, RTATTR_START_OFFSET, 5, 16,
+                             int_to_bytes(operstate))
+        struct.pack_into("=LHHLL", data, 0, len(data), msg_type, 0, 0, 0)
+        return data
+
+    def test_nic_attached_oper_down(self, m_read_netlink_socket, m_socket):
+        '''Test for a new nic attached'''
+        ifname = "eth0"
+        data_op_down = self._media_switch_data(ifname, RTM_NEWLINK, OPER_DOWN)
+        m_read_netlink_socket.side_effect = [data_op_down]
+        ifread = wait_for_nic_attach_event(m_socket, [])
+        self.assertEqual(m_read_netlink_socket.call_count, 1)
+        self.assertEqual(ifname, ifread)
+
+    def test_nic_attached_oper_up(self, m_read_netlink_socket, m_socket):
+        '''Test for a new nic attached'''
+        ifname = "eth0"
+        data_op_up = self._media_switch_data(ifname, RTM_NEWLINK, OPER_UP)
+        m_read_netlink_socket.side_effect = [data_op_up]
+        ifread = wait_for_nic_attach_event(m_socket, [])
+        self.assertEqual(m_read_netlink_socket.call_count, 1)
+        self.assertEqual(ifname, ifread)
+
+    def test_nic_attach_ignore_existing(self, m_read_netlink_socket, m_socket):
+        '''Test that we read only the interfaces we are interested in.'''
+        data_eth0 = self._media_switch_data("eth0", RTM_NEWLINK, OPER_DOWN)
+        data_eth1 = self._media_switch_data("eth1", RTM_NEWLINK, OPER_DOWN)
+        m_read_netlink_socket.side_effect = [data_eth0, data_eth1]
+        ifread = wait_for_nic_attach_event(m_socket, ["eth0"])
+        self.assertEqual(m_read_netlink_socket.call_count, 2)
+        self.assertEqual("eth1", ifread)
+
+    def test_nic_attach_read_first(self, m_read_netlink_socket, m_socket):
+        '''Test that we read only the interfaces we are interested in.'''
+        data_eth0 = self._media_switch_data("eth0", RTM_NEWLINK, OPER_DOWN)
+        data_eth1 = self._media_switch_data("eth1", RTM_NEWLINK, OPER_DOWN)
+        m_read_netlink_socket.side_effect = [data_eth0, data_eth1]
+        ifread = wait_for_nic_attach_event(m_socket, ["eth1"])
+        self.assertEqual(m_read_netlink_socket.call_count, 1)
+        self.assertEqual("eth0", ifread)
+
+    def test_nic_detached(self, m_read_netlink_socket, m_socket):
+        '''Test for an existing nic detached'''
+        ifname = "eth0"
+        data_op_down = self._media_switch_data(ifname, RTM_DELLINK, OPER_DOWN)
+        m_read_netlink_socket.side_effect = [data_op_down]
+        ifread = wait_for_nic_detach_event(m_socket)
+        self.assertEqual(m_read_netlink_socket.call_count, 1)
+        self.assertEqual(ifname, ifread)
 
 
 @mock.patch('cloudinit.sources.helpers.netlink.socket.socket')
@@ -180,17 +250,22 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         other_ifname = "eth1"
         expected_ifname = "eth0"
         data_op_down_eth1 = self._media_switch_data(
-                                other_ifname, RTM_NEWLINK, OPER_DOWN)
+            other_ifname, RTM_NEWLINK, OPER_DOWN
+        )
         data_op_up_eth1 = self._media_switch_data(
-                                other_ifname, RTM_NEWLINK, OPER_UP)
+            other_ifname, RTM_NEWLINK, OPER_UP
+        )
         data_op_down_eth0 = self._media_switch_data(
-                                expected_ifname, RTM_NEWLINK, OPER_DOWN)
+            expected_ifname, RTM_NEWLINK, OPER_DOWN
+        )
         data_op_up_eth0 = self._media_switch_data(
-                                expected_ifname, RTM_NEWLINK, OPER_UP)
-        m_read_netlink_socket.side_effect = [data_op_down_eth1,
-                                             data_op_up_eth1,
-                                             data_op_down_eth0,
-                                             data_op_up_eth0]
+            expected_ifname, RTM_NEWLINK, OPER_UP)
+        m_read_netlink_socket.side_effect = [
+            data_op_down_eth1,
+            data_op_up_eth1,
+            data_op_down_eth0,
+            data_op_up_eth0
+        ]
         wait_for_media_disconnect_connect(m_socket, expected_ifname)
         self.assertIn('Ignored netlink event on interface %s' % other_ifname,
                       self.logs.getvalue())
@@ -207,17 +282,23 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         '''
         ifname = "eth0"
         data_getlink_down = self._media_switch_data(
-                                    ifname, RTM_GETLINK, OPER_DOWN)
+            ifname, RTM_GETLINK, OPER_DOWN
+        )
         data_getlink_up = self._media_switch_data(
-                                    ifname, RTM_GETLINK, OPER_UP)
+            ifname, RTM_GETLINK, OPER_UP
+        )
         data_newlink_down = self._media_switch_data(
-                                    ifname, RTM_NEWLINK, OPER_DOWN)
+            ifname, RTM_NEWLINK, OPER_DOWN
+        )
         data_newlink_up = self._media_switch_data(
-                                    ifname, RTM_NEWLINK, OPER_UP)
-        m_read_netlink_socket.side_effect = [data_getlink_down,
-                                             data_getlink_up,
-                                             data_newlink_down,
-                                             data_newlink_up]
+            ifname, RTM_NEWLINK, OPER_UP
+        )
+        m_read_netlink_socket.side_effect = [
+            data_getlink_down,
+            data_getlink_up,
+            data_newlink_down,
+            data_newlink_up
+        ]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 4)
 
@@ -233,19 +314,25 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         '''
         ifname = "eth0"
         data_setlink_down = self._media_switch_data(
-                                    ifname, RTM_SETLINK, OPER_DOWN)
+            ifname, RTM_SETLINK, OPER_DOWN
+        )
         data_setlink_up = self._media_switch_data(
-                                    ifname, RTM_SETLINK, OPER_UP)
+            ifname, RTM_SETLINK, OPER_UP
+        )
         data_newlink_down = self._media_switch_data(
-                                    ifname, RTM_NEWLINK, OPER_DOWN)
+            ifname, RTM_NEWLINK, OPER_DOWN
+        )
         data_newlink_up = self._media_switch_data(
-                                    ifname, RTM_NEWLINK, OPER_UP)
-        m_read_netlink_socket.side_effect = [data_setlink_down,
-                                             data_setlink_up,
-                                             data_newlink_down,
-                                             data_newlink_up,
-                                             data_newlink_down,
-                                             data_newlink_up]
+            ifname, RTM_NEWLINK, OPER_UP
+        )
+        m_read_netlink_socket.side_effect = [
+            data_setlink_down,
+            data_setlink_up,
+            data_newlink_down,
+            data_newlink_up,
+            data_newlink_down,
+            data_newlink_up
+        ]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 4)
 
@@ -255,23 +342,30 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         ifname = "eth0"
         data_op_down = self._media_switch_data(ifname, RTM_NEWLINK, OPER_DOWN)
         data_op_up = self._media_switch_data(ifname, RTM_NEWLINK, OPER_UP)
-        data_op_dormant = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                  OPER_DORMANT)
-        data_op_notpresent = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                     OPER_NOTPRESENT)
-        data_op_lowerdown = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                    OPER_LOWERLAYERDOWN)
-        data_op_testing = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                  OPER_TESTING)
-        data_op_unknown = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                  OPER_UNKNOWN)
-        m_read_netlink_socket.side_effect = [data_op_up, data_op_up,
-                                             data_op_dormant, data_op_up,
-                                             data_op_notpresent, data_op_up,
-                                             data_op_lowerdown, data_op_up,
-                                             data_op_testing, data_op_up,
-                                             data_op_unknown, data_op_up,
-                                             data_op_down, data_op_up]
+        data_op_dormant = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_DORMANT
+        )
+        data_op_notpresent = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_NOTPRESENT
+        )
+        data_op_lowerdown = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_LOWERLAYERDOWN
+        )
+        data_op_testing = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_TESTING
+        )
+        data_op_unknown = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_UNKNOWN
+        )
+        m_read_netlink_socket.side_effect = [
+            data_op_up, data_op_up,
+            data_op_dormant, data_op_up,
+            data_op_notpresent, data_op_up,
+            data_op_lowerdown, data_op_up,
+            data_op_testing, data_op_up,
+            data_op_unknown, data_op_up,
+            data_op_down, data_op_up
+        ]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 14)
 
@@ -281,12 +375,14 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         ifname = "eth0"
         data_op_down = self._media_switch_data(ifname, RTM_NEWLINK, OPER_DOWN)
         data_op_up = self._media_switch_data(ifname, RTM_NEWLINK, OPER_UP)
-        data_op_dormant = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                  OPER_DORMANT)
-        data_op_unknown = self._media_switch_data(ifname, RTM_NEWLINK,
-                                                  OPER_UNKNOWN)
-        m_read_netlink_socket.side_effect = [data_op_down, data_op_dormant,
-                                             data_op_unknown, data_op_up]
+        data_op_dormant = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_DORMANT)
+        data_op_unknown = self._media_switch_data(
+            ifname, RTM_NEWLINK, OPER_UNKNOWN)
+        m_read_netlink_socket.side_effect = [
+            data_op_down, data_op_dormant,
+            data_op_unknown, data_op_up
+        ]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 4)
 
@@ -300,9 +396,11 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         data_op_down = self._media_switch_data(ifname, RTM_NEWLINK, OPER_DOWN)
         data_op_up = self._media_switch_data(ifname, RTM_NEWLINK, OPER_UP)
         data_op_invalid = self._media_switch_data(ifname, RTM_NEWLINK, 7)
-        m_read_netlink_socket.side_effect = [data_op_invalid, data_op_up,
-                                             data_op_down, data_op_invalid,
-                                             data_op_up]
+        m_read_netlink_socket.side_effect = [
+            data_op_invalid, data_op_up,
+            data_op_down, data_op_invalid,
+            data_op_up
+        ]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 5)
 
@@ -333,8 +431,9 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         data_invalid2 = self._media_switch_data(ifname, RTM_NEWLINK, None)
         data_op_down = self._media_switch_data(ifname, RTM_NEWLINK, OPER_DOWN)
         data_op_up = self._media_switch_data(ifname, RTM_NEWLINK, OPER_UP)
-        m_read_netlink_socket.side_effect = [data_invalid1, data_invalid2,
-                                             data_op_down, data_op_up]
+        m_read_netlink_socket.side_effect = [
+            data_invalid1, data_invalid2, data_op_down, data_op_up
+        ]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 4)
 
@@ -344,11 +443,15 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         bytes = ifname.encode("utf-8")
         data = bytearray(96)
         struct.pack_into("=LHHLL", data, 0, 48, RTM_NEWLINK, 0, 0, 0)
-        struct.pack_into("HH4sHHc", data, RTATTR_START_OFFSET, 8, 3,
-                         bytes, 5, 16, int_to_bytes(OPER_DOWN))
+        struct.pack_into(
+            "HH4sHHc", data, RTATTR_START_OFFSET, 8, 3,
+            bytes, 5, 16, int_to_bytes(OPER_DOWN)
+        )
         struct.pack_into("=LHHLL", data, 48, 48, RTM_NEWLINK, 0, 0, 0)
-        struct.pack_into("HH4sHHc", data, 48 + RTATTR_START_OFFSET, 8,
-                         3, bytes, 5, 16, int_to_bytes(OPER_UP))
+        struct.pack_into(
+            "HH4sHHc", data, 48 + RTATTR_START_OFFSET, 8,
+            3, bytes, 5, 16, int_to_bytes(OPER_UP)
+        )
         m_read_netlink_socket.return_value = data
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 1)
@@ -360,14 +463,18 @@ class TestWaitForMediaDisconnectConnect(CiTestCase):
         data1 = bytearray(112)
         data2 = bytearray(32)
         struct.pack_into("=LHHLL", data1, 0, 48, RTM_NEWLINK, 0, 0, 0)
-        struct.pack_into("HH4sHHc", data1, RTATTR_START_OFFSET, 8, 3,
-                         bytes, 5, 16, int_to_bytes(OPER_DOWN))
+        struct.pack_into(
+            "HH4sHHc", data1, RTATTR_START_OFFSET, 8, 3,
+            bytes, 5, 16, int_to_bytes(OPER_DOWN)
+        )
         struct.pack_into("=LHHLL", data1, 48, 48, RTM_NEWLINK, 0, 0, 0)
-        struct.pack_into("HH4sHHc", data1, 80, 8, 3, bytes, 5, 16,
-                         int_to_bytes(OPER_DOWN))
+        struct.pack_into(
+            "HH4sHHc", data1, 80, 8, 3, bytes, 5, 16, int_to_bytes(OPER_DOWN)
+        )
         struct.pack_into("=LHHLL", data1, 96, 48, RTM_NEWLINK, 0, 0, 0)
-        struct.pack_into("HH4sHHc", data2, 16, 8, 3, bytes, 5, 16,
-                         int_to_bytes(OPER_UP))
+        struct.pack_into(
+            "HH4sHHc", data2, 16, 8, 3, bytes, 5, 16, int_to_bytes(OPER_UP)
+        )
         m_read_netlink_socket.side_effect = [data1, data2]
         wait_for_media_disconnect_connect(m_socket, ifname)
         self.assertEqual(m_read_netlink_socket.call_count, 2)

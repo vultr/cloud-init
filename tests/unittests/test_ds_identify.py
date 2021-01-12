@@ -6,6 +6,7 @@ import os
 from uuid import uuid4
 
 from cloudinit import safeyaml
+from cloudinit import subp
 from cloudinit import util
 from cloudinit.tests.helpers import (
     CiTestCase, dir2dict, populate_dir, populate_dir_with_ts)
@@ -19,6 +20,8 @@ UNAME_MYSYS = ("Linux bart 4.4.0-62-generic #83-Ubuntu "
 UNAME_PPC64EL = ("Linux diamond 4.4.0-83-generic #106-Ubuntu SMP "
                  "Mon Jun 26 17:53:54 UTC 2017 "
                  "ppc64le ppc64le ppc64le GNU/Linux")
+UNAME_FREEBSD = ("FreeBSD fbsd12-1 12.1-RELEASE-p10 "
+                 "FreeBSD 12.1-RELEASE-p10 GENERIC  amd64")
 
 BLKID_EFI_ROOT = """
 DEVNAME=/dev/sda1
@@ -79,6 +82,7 @@ MOCK_VIRT_IS_VMWARE = {'name': 'detect_virt', 'RET': 'vmware', 'ret': 0}
 MOCK_VIRT_IS_VM_OTHER = {'name': 'detect_virt', 'RET': 'vm-other', 'ret': 0}
 MOCK_VIRT_IS_XEN = {'name': 'detect_virt', 'RET': 'xen', 'ret': 0}
 MOCK_UNAME_IS_PPC64 = {'name': 'uname', 'out': UNAME_PPC64EL, 'ret': 0}
+MOCK_UNAME_IS_FREEBSD = {'name': 'uname', 'out': UNAME_FREEBSD, 'ret': 0}
 
 shell_true = 0
 shell_false = 1
@@ -142,6 +146,8 @@ class DsIdentifyBase(CiTestCase):
              'out': 'No value found', 'ret': 1},
             {'name': 'dmi_decode', 'ret': 1,
              'err': 'No dmidecode program. ERROR.'},
+            {'name': 'get_kenv_field', 'ret': 1,
+             'err': 'No kenv program. ERROR.'},
         ]
 
         written = [d['name'] for d in mocks]
@@ -160,8 +166,8 @@ class DsIdentifyBase(CiTestCase):
 
         rc = 0
         try:
-            out, err = util.subp(['sh', '-c', '. %s' % wrap], capture=True)
-        except util.ProcessExecutionError as e:
+            out, err = subp.subp(['sh', '-c', '. %s' % wrap], capture=True)
+        except subp.ProcessExecutionError as e:
             rc = e.exit_code
             out = e.stdout
             err = e.stderr
@@ -256,6 +262,10 @@ class TestDsIdentify(DsIdentifyBase):
         """EC2: bobrightbox.com in product_serial is not brightbox'"""
         self._test_ds_not_found('Ec2-brightbox-negative')
 
+    def test_freebsd_nocloud(self):
+        """NoCloud identified on FreeBSD via label by geom."""
+        self._test_ds_found('NoCloud-fbsd')
+
     def test_gce_by_product_name(self):
         """GCE identifies itself with product_name."""
         self._test_ds_found('GCE')
@@ -271,6 +281,10 @@ class TestDsIdentify(DsIdentifyBase):
     def test_rbx_cloud(self):
         """Rbx datasource has a disk with LABEL=CLOUDMD."""
         self._test_ds_found('RbxCloud')
+
+    def test_rbx_cloud_lower(self):
+        """Rbx datasource has a disk with LABEL=cloudmd."""
+        self._test_ds_found('RbxCloudLower')
 
     def test_config_drive_upper(self):
         """ConfigDrive datasource has a disk with LABEL=CONFIG-2."""
@@ -447,6 +461,10 @@ class TestDsIdentify(DsIdentifyBase):
         """Open Telecom identification."""
         self._test_ds_found('OpenStack-OpenTelekom')
 
+    def test_openstack_sap_ccloud(self):
+        """SAP Converged Cloud identification"""
+        self._test_ds_found('OpenStack-SAPCCloud')
+
     def test_openstack_asset_tag_nova(self):
         """OpenStack identification via asset tag OpenStack Nova."""
         self._test_ds_found('OpenStack-AssetTag-Nova')
@@ -568,6 +586,10 @@ class TestDsIdentify(DsIdentifyBase):
         """NoCloud is found with uppercase filesystem label."""
         self._test_ds_found('NoCloudUpper')
 
+    def test_nocloud_fatboot(self):
+        """NoCloud fatboot label - LP: #184166."""
+        self._test_ds_found('NoCloud-fatboot')
+
     def test_nocloud_seed(self):
         """Nocloud seed directory."""
         self._test_ds_found('NoCloud-seed')
@@ -607,8 +629,10 @@ class TestDsIdentify(DsIdentifyBase):
         ret = self._check_via_dict(
             cust, RC_FOUND,
             func=".", args=[os.path.join(rootd, mpp)], rootd=rootd)
-        line = [l for l in ret.stdout.splitlines() if l.startswith(pre)][0]
-        toks = line.replace(pre, "").split(":")
+        match = [
+            line for line in ret.stdout.splitlines() if line.startswith(pre)
+        ][0]
+        toks = match.replace(pre, "").split(":")
         expected = ["/sbin", "/bin", "/usr/sbin", "/usr/bin", "/mycust/path"]
         self.assertEqual(expected, [p for p in expected if p in toks],
                          "path did not have expected tokens")
@@ -629,14 +653,22 @@ class TestDsIdentify(DsIdentifyBase):
 class TestBSDNoSys(DsIdentifyBase):
     """Test *BSD code paths
 
-    FreeBSD doesn't have /sys so we use dmidecode(8) here
-    It also doesn't have systemd-detect-virt(8), so we use sysctl(8) to query
+    FreeBSD doesn't have /sys so we use kenv(1) here.
+    Other BSD systems fallback to dmidecode(8).
+    BSDs also doesn't have systemd-detect-virt(8), so we use sysctl(8) to query
     kern.vm_guest, and optionally map it"""
 
-    def test_dmi_decode(self):
+    def test_dmi_kenv(self):
+        """Test that kenv(1) works on systems which don't have /sys
+
+        This will be used on FreeBSD systems.
+        """
+        self._test_ds_found('Hetzner-kenv')
+
+    def test_dmi_dmidecode(self):
         """Test that dmidecode(8) works on systems which don't have /sys
 
-        This will be used on *BSD systems.
+        This will be used on all other BSD systems.
         """
         self._test_ds_found('Hetzner-dmidecode')
 
@@ -706,6 +738,26 @@ def blkid_out(disks=None):
         lines.append("%s=%s" % ("DEVNAME", disk["DEVNAME"]))
         for key in [d for d in disk if d != "DEVNAME"]:
             lines.append("%s=%s" % (key, disk[key]))
+        lines.append("")
+    return '\n'.join(lines)
+
+
+def geom_out(disks=None):
+    """Convert a list of disk dictionaries into geom content.
+
+    geom called with -a (provider) and -s (script-friendly), will produce the
+    following output:
+
+      gpt/gptboot0  N/A  vtbd1p1
+         gpt/swap0  N/A  vtbd1p2
+    iso9660/cidata  N/A  vtbd2
+    """
+    if disks is None:
+        disks = []
+    lines = []
+    for disk in disks:
+        lines.append("%s/%s  N/A  %s" % (
+            disk["TYPE"], disk["LABEL"], disk["DEVNAME"]))
         lines.append("")
     return '\n'.join(lines)
 
@@ -792,6 +844,19 @@ VALID_CFG = {
             'dev/vdb': 'pretend iso content for cidata\n',
         }
     },
+    'NoCloud-fbsd': {
+        'ds': 'NoCloud',
+        'mocks': [
+            MOCK_VIRT_IS_KVM,
+            MOCK_UNAME_IS_FREEBSD,
+            {'name': 'geom', 'ret': 0,
+             'out': geom_out(
+                 [{'DEVNAME': 'vtbd', 'TYPE': 'iso9660', 'LABEL': 'cidata'}])},
+        ],
+        'files': {
+            '/dev/vtdb': 'pretend iso content for cidata\n',
+        }
+    },
     'NoCloudUpper': {
         'ds': 'NoCloud',
         'mocks': [
@@ -800,6 +865,20 @@ VALID_CFG = {
              'out': blkid_out(
                  BLKID_UEFI_UBUNTU +
                  [{'DEVNAME': 'vdb', 'TYPE': 'iso9660', 'LABEL': 'CIDATA'}])},
+        ],
+        'files': {
+            'dev/vdb': 'pretend iso content for cidata\n',
+        }
+    },
+    'NoCloud-fatboot': {
+        'ds': 'NoCloud',
+        'mocks': [
+            MOCK_VIRT_IS_XEN,
+            {'name': 'blkid', 'ret': 0,
+             'out': blkid_out(
+                 BLKID_UEFI_UBUNTU +
+                 [{'DEVNAME': 'xvdb', 'TYPE': 'vfat', 'SEC_TYPE': 'msdos',
+                   'UUID': '355a-4FC2', 'LABEL_FATBOOT': 'cidata'}])},
         ],
         'files': {
             'dev/vdb': 'pretend iso content for cidata\n',
@@ -833,6 +912,12 @@ VALID_CFG = {
         'ds': 'OpenStack',
         'files': {P_CHASSIS_ASSET_TAG: 'OpenTelekomCloud\n'},
         'mocks': [MOCK_VIRT_IS_XEN],
+    },
+    'OpenStack-SAPCCloud': {
+        # SAP CCloud hosts use OpenStack on VMware
+        'ds': 'OpenStack',
+        'files': {P_CHASSIS_ASSET_TAG: 'SAP CCloud VM\n'},
+        'mocks': [MOCK_VIRT_IS_VMWARE],
     },
     'OpenStack-AssetTag-Nova': {
         # VMware vSphere can't modify product-name, LP: #1669875
@@ -935,9 +1020,28 @@ VALID_CFG = {
              )},
         ],
     },
+    'RbxCloudLower': {
+        'ds': 'RbxCloud',
+        'mocks': [
+            {'name': 'blkid', 'ret': 0,
+             'out': blkid_out(
+                 [{'DEVNAME': 'vda1', 'TYPE': 'vfat', 'PARTUUID': uuid4()},
+                  {'DEVNAME': 'vda2', 'TYPE': 'ext4',
+                   'LABEL': 'cloudimg-rootfs', 'PARTUUID': uuid4()},
+                  {'DEVNAME': 'vdb', 'TYPE': 'vfat', 'LABEL': 'cloudmd'}]
+             )},
+        ],
+    },
     'Hetzner': {
         'ds': 'Hetzner',
         'files': {P_SYS_VENDOR: 'Hetzner\n'},
+    },
+    'Hetzner-kenv': {
+        'ds': 'Hetzner',
+        'mocks': [
+            MOCK_UNAME_IS_FREEBSD,
+            {'name': 'get_kenv_field', 'ret': 0, 'RET': 'Hetzner'}
+        ],
     },
     'Hetzner-dmidecode': {
         'ds': 'Hetzner',
@@ -1028,11 +1132,11 @@ VALID_CFG = {
     'Ec2-E24Cloud': {
         'ds': 'Ec2',
         'files': {P_SYS_VENDOR: 'e24cloud\n'},
-     },
+    },
     'Ec2-E24Cloud-negative': {
         'ds': 'Ec2',
         'files': {P_SYS_VENDOR: 'e24cloudyday\n'},
-     }
+    }
 }
 
 # vi: ts=4 expandtab

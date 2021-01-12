@@ -1,5 +1,6 @@
 # This file is part of cloud-init. See LICENSE file for license information.
 
+from cloudinit import dmi
 from cloudinit import helpers
 from cloudinit.sources.DataSourceNoCloud import (
     DataSourceNoCloud as dsNoCloud,
@@ -30,7 +31,7 @@ class TestNoCloudDataSource(CiTestCase):
         self.mocks.enter_context(
             mock.patch.object(util, 'get_cmdline', return_value=self.cmdline))
         self.mocks.enter_context(
-            mock.patch.object(util, 'read_dmi_data', return_value=None))
+            mock.patch.object(dmi, 'read_dmi_data', return_value=None))
 
     def _test_fs_config_is_read(self, fs_label, fs_label_to_search):
         vfat_device = 'device-1'
@@ -288,8 +289,23 @@ class TestNoCloudDataSource(CiTestCase):
         self.mocks.enter_context(
             mock.patch.object(util, 'is_FreeBSD', return_value=True))
 
+        def _mfind_devs_with_freebsd(
+                criteria=None, oformat='device',
+                tag=None, no_cache=False, path=None):
+            if not criteria:
+                return ["/dev/msdosfs/foo", "/dev/iso9660/foo"]
+            if criteria.startswith("LABEL="):
+                return ["/dev/msdosfs/foo", "/dev/iso9660/foo"]
+            elif criteria == "TYPE=vfat":
+                return ["/dev/msdosfs/foo"]
+            elif criteria == "TYPE=iso9660":
+                return ["/dev/iso9660/foo"]
+            return []
+
         self.mocks.enter_context(
-            mock.patch.object(os.path, 'exists', return_value=True))
+            mock.patch.object(
+                util, 'find_devs_with_freebsd',
+                side_effect=_mfind_devs_with_freebsd))
 
         dsrc = dsNoCloud(sys_cfg=sys_cfg, distro=None, paths=self.paths)
         ret = dsrc._get_devices('foo')

@@ -6,13 +6,14 @@
 # This file is part of cloud-init. See LICENSE file for license information.
 
 import errno
+import ipaddress
 import logging
 import os
 import re
-from functools import partial
 
-from cloudinit.net.network_state import mask_to_net_prefix
+from cloudinit import subp
 from cloudinit import util
+from cloudinit.net.network_state import mask_to_net_prefix
 from cloudinit.url_helper import UrlError, readurl
 
 LOG = logging.getLogger(__name__)
@@ -97,10 +98,6 @@ def is_up(devname):
     return read_sys_net_safe(devname, "operstate", translate=translate)
 
 
-def is_wireless(devname):
-    return os.path.exists(sys_dev_path(devname, "wireless"))
-
-
 def is_bridge(devname):
     return os.path.exists(sys_dev_path(devname, "bridge"))
 
@@ -125,6 +122,15 @@ def master_is_bridge_or_bond(devname):
     bonding_path = os.path.join(master_path, "bonding")
     bridge_path = os.path.join(master_path, "bridge")
     return (os.path.exists(bonding_path) or os.path.exists(bridge_path))
+
+
+def master_is_openvswitch(devname):
+    """Return a bool indicating if devname's master is openvswitch"""
+    master_path = get_master(devname)
+    if master_path is None:
+        return False
+    ovs_path = sys_dev_path(devname, path="upper_ovs-system")
+    return os.path.exists(ovs_path)
 
 
 def is_netfailover(devname, driver=None):
@@ -264,28 +270,6 @@ def is_vlan(devname):
     return 'DEVTYPE=vlan' in uevent.splitlines()
 
 
-def is_connected(devname):
-    # is_connected isn't really as simple as that.  2 is
-    # 'physically connected'. 3 is 'not connected'. but a wlan interface will
-    # always show 3.
-    iflink = read_sys_net_safe(devname, "iflink")
-    if iflink == "2":
-        return True
-    if not is_wireless(devname):
-        return False
-    LOG.debug("'%s' is wireless, basing 'connected' on carrier", devname)
-    return read_sys_net_safe(devname, "carrier",
-                             translate={'0': False, '1': True})
-
-
-def is_physical(devname):
-    return os.path.exists(sys_dev_path(devname, "device"))
-
-
-def is_present(devname):
-    return os.path.exists(sys_dev_path(devname))
-
-
 def device_driver(devname):
     """Return the device driver for net device named 'devname'."""
     driver = None
@@ -334,8 +318,18 @@ def find_fallback_nic(blacklist_drivers=None):
     """Return the name of the 'fallback' network device."""
     if util.is_FreeBSD():
         return find_fallback_nic_on_freebsd(blacklist_drivers)
+    elif util.is_NetBSD() or util.is_OpenBSD():
+        return find_fallback_nic_on_netbsd_or_openbsd(blacklist_drivers)
     else:
         return find_fallback_nic_on_linux(blacklist_drivers)
+
+
+def find_fallback_nic_on_netbsd_or_openbsd(blacklist_drivers=None):
+    values = list(sorted(
+        get_interfaces_by_mac().values(),
+        key=natural_sort_key))
+    if values:
+        return values[0]
 
 
 def find_fallback_nic_on_freebsd(blacklist_drivers=None):
@@ -347,7 +341,7 @@ def find_fallback_nic_on_freebsd(blacklist_drivers=None):
 
     we'll use the first interface from ``ifconfig -l -u ether``
     """
-    stdout, _stderr = util.subp(['ifconfig', '-l', '-u', 'ether'])
+    stdout, _stderr = subp.subp(['ifconfig', '-l', '-u', 'ether'])
     values = stdout.split()
     if values:
         return values[0]
@@ -508,43 +502,6 @@ def extract_physdevs(netcfg):
     raise RuntimeError('Unknown network config version: %s' % version)
 
 
-def wait_for_physdevs(netcfg, strict=True):
-    physdevs = extract_physdevs(netcfg)
-
-    # set of expected iface names and mac addrs
-    expected_ifaces = dict([(iface[0], iface[1]) for iface in physdevs])
-    expected_macs = set(expected_ifaces.keys())
-
-    # set of current macs
-    present_macs = get_interfaces_by_mac().keys()
-
-    # compare the set of expected mac address values to
-    # the current macs present; we only check MAC as cloud-init
-    # has not yet renamed interfaces and the netcfg may include
-    # such renames.
-    for _ in range(0, 5):
-        if expected_macs.issubset(present_macs):
-            LOG.debug('net: all expected physical devices present')
-            return
-
-        missing = expected_macs.difference(present_macs)
-        LOG.debug('net: waiting for expected net devices: %s', missing)
-        for mac in missing:
-            # trigger a settle, unless this interface exists
-            syspath = sys_dev_path(expected_ifaces[mac])
-            settle = partial(util.udevadm_settle, exists=syspath)
-            msg = 'Waiting for udev events to settle or %s exists' % syspath
-            util.log_time(LOG.debug, msg, func=settle)
-
-        # update present_macs after settles
-        present_macs = get_interfaces_by_mac().keys()
-
-    msg = 'Not all expected physical devices present: %s' % missing
-    LOG.warning(msg)
-    if strict:
-        raise RuntimeError(msg)
-
-
 def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
     """read the network config and rename devices accordingly.
     if strict_present is false, then do not raise exception if no devices
@@ -558,7 +515,9 @@ def apply_network_config_names(netcfg, strict_present=True, strict_busy=True):
     try:
         _rename_interfaces(extract_physdevs(netcfg))
     except RuntimeError as e:
-        raise RuntimeError('Failed to apply network config names: %s' % e)
+        raise RuntimeError(
+            'Failed to apply network config names: %s' % e
+        ) from e
 
 
 def interface_has_own_mac(ifname, strict=False):
@@ -609,9 +568,9 @@ def _get_current_rename_info(check_downable=True):
 
     if check_downable:
         nmatch = re.compile(r"[0-9]+:\s+(\w+)[@:]")
-        ipv6, _err = util.subp(['ip', '-6', 'addr', 'show', 'permanent',
+        ipv6, _err = subp.subp(['ip', '-6', 'addr', 'show', 'permanent',
                                 'scope', 'global'], capture=True)
-        ipv4, _err = util.subp(['ip', '-4', 'addr', 'show'], capture=True)
+        ipv4, _err = subp.subp(['ip', '-4', 'addr', 'show'], capture=True)
 
         nics_with_addresses = set()
         for bytes_out in (ipv6, ipv4):
@@ -647,13 +606,13 @@ def _rename_interfaces(renames, strict_present=True, strict_busy=True,
                     for data in cur_info.values())
 
     def rename(cur, new):
-        util.subp(["ip", "link", "set", cur, "name", new], capture=True)
+        subp.subp(["ip", "link", "set", cur, "name", new], capture=True)
 
     def down(name):
-        util.subp(["ip", "link", "set", name, "down"], capture=True)
+        subp.subp(["ip", "link", "set", name, "down"], capture=True)
 
     def up(name):
-        util.subp(["ip", "link", "set", name, "up"], capture=True)
+        subp.subp(["ip", "link", "set", name, "up"], capture=True)
 
     ops = []
     errors = []
@@ -796,26 +755,34 @@ def get_ib_interface_hwaddr(ifname, ethernet_format):
         return mac
 
 
-def get_interfaces_by_mac():
+def get_interfaces_by_mac(blacklist_drivers=None) -> dict:
     if util.is_FreeBSD():
-        return get_interfaces_by_mac_on_freebsd()
+        return get_interfaces_by_mac_on_freebsd(
+            blacklist_drivers=blacklist_drivers)
+    elif util.is_NetBSD():
+        return get_interfaces_by_mac_on_netbsd(
+            blacklist_drivers=blacklist_drivers)
+    elif util.is_OpenBSD():
+        return get_interfaces_by_mac_on_openbsd(
+            blacklist_drivers=blacklist_drivers)
     else:
-        return get_interfaces_by_mac_on_linux()
+        return get_interfaces_by_mac_on_linux(
+            blacklist_drivers=blacklist_drivers)
 
 
-def get_interfaces_by_mac_on_freebsd():
-    (out, _) = util.subp(['ifconfig', '-a', 'ether'])
+def get_interfaces_by_mac_on_freebsd(blacklist_drivers=None) -> dict():
+    (out, _) = subp.subp(['ifconfig', '-a', 'ether'])
 
     # flatten each interface block in a single line
     def flatten(out):
         curr_block = ''
-        for l in out.split('\n'):
-            if l.startswith('\t'):
-                curr_block += l
+        for line in out.split('\n'):
+            if line.startswith('\t'):
+                curr_block += line
             else:
                 if curr_block:
                     yield curr_block
-                curr_block = l
+                curr_block = line
         yield curr_block
 
     # looks for interface and mac in a list of flatten block
@@ -830,12 +797,44 @@ def get_interfaces_by_mac_on_freebsd():
     return results
 
 
-def get_interfaces_by_mac_on_linux():
+def get_interfaces_by_mac_on_netbsd(blacklist_drivers=None) -> dict():
+    ret = {}
+    re_field_match = (
+        r"(?P<ifname>\w+).*address:\s"
+        r"(?P<mac>([\da-f]{2}[:-]){5}([\da-f]{2})).*"
+    )
+    (out, _) = subp.subp(['ifconfig', '-a'])
+    if_lines = re.sub(r'\n\s+', ' ', out).splitlines()
+    for line in if_lines:
+        m = re.match(re_field_match, line)
+        if m:
+            fields = m.groupdict()
+            ret[fields['mac']] = fields['ifname']
+    return ret
+
+
+def get_interfaces_by_mac_on_openbsd(blacklist_drivers=None) -> dict():
+    ret = {}
+    re_field_match = (
+        r"(?P<ifname>\w+).*lladdr\s"
+        r"(?P<mac>([\da-f]{2}[:-]){5}([\da-f]{2})).*")
+    (out, _) = subp.subp(['ifconfig', '-a'])
+    if_lines = re.sub(r'\n\s+', ' ', out).splitlines()
+    for line in if_lines:
+        m = re.match(re_field_match, line)
+        if m:
+            fields = m.groupdict()
+            ret[fields['mac']] = fields['ifname']
+    return ret
+
+
+def get_interfaces_by_mac_on_linux(blacklist_drivers=None) -> dict:
     """Build a dictionary of tuples {mac: name}.
 
     Bridges and any devices that have a 'stolen' mac are excluded."""
     ret = {}
-    for name, mac, _driver, _devid in get_interfaces():
+    for name, mac, _driver, _devid in get_interfaces(
+            blacklist_drivers=blacklist_drivers):
         if mac in ret:
             raise RuntimeError(
                 "duplicate mac found! both '%s' and '%s' have mac '%s'" %
@@ -853,11 +852,13 @@ def get_interfaces_by_mac_on_linux():
     return ret
 
 
-def get_interfaces():
+def get_interfaces(blacklist_drivers=None) -> list:
     """Return list of interface tuples (name, mac, driver, device_id)
 
     Bridges and any devices that have a 'stolen' mac are excluded."""
     ret = []
+    if blacklist_drivers is None:
+        blacklist_drivers = []
     devs = get_devicelist()
     # 16 somewhat arbitrarily chosen.  Normally a mac is 6 '00:' tokens.
     zero_mac = ':'.join(('00',) * 16)
@@ -870,8 +871,10 @@ def get_interfaces():
             continue
         if is_bond(name):
             continue
-        if get_master(name) is not None and not master_is_bridge_or_bond(name):
-            continue
+        if get_master(name) is not None:
+            if (not master_is_bridge_or_bond(name) and
+                    not master_is_openvswitch(name)):
+                continue
         if is_netfailover(name):
             continue
         mac = get_interface_mac(name)
@@ -881,7 +884,11 @@ def get_interfaces():
         # skip nics that have no mac (00:00....)
         if name != 'lo' and mac == zero_mac[:len(mac)]:
             continue
-        ret.append((name, mac, device_driver(name), device_devid(name)))
+        # skip nics that have drivers blacklisted
+        driver = device_driver(name)
+        if driver in blacklist_drivers:
+            continue
+        ret.append((name, mac, driver, device_devid(name)))
     return ret
 
 
@@ -913,6 +920,38 @@ def has_url_connectivity(url):
     try:
         readurl(url, timeout=5)
     except UrlError:
+        return False
+    return True
+
+
+def is_ip_address(s: str) -> bool:
+    """Returns a bool indicating if ``s`` is an IP address.
+
+    :param s:
+        The string to test.
+
+    :return:
+        A bool indicating if the string contains an IP address or not.
+    """
+    try:
+        ipaddress.ip_address(s)
+    except ValueError:
+        return False
+    return True
+
+
+def is_ipv4_address(s: str) -> bool:
+    """Returns a bool indicating if ``s`` is an IPv4 address.
+
+    :param s:
+        The string to test.
+
+    :return:
+        A bool indicating if the string contains an IPv4 address or not.
+    """
+    try:
+        ipaddress.IPv4Address(s)
+    except ValueError:
         return False
     return True
 
@@ -950,7 +989,8 @@ class EphemeralIPv4Network(object):
             self.prefix = mask_to_net_prefix(prefix_or_mask)
         except ValueError as e:
             raise ValueError(
-                'Cannot setup network: {0}'.format(e))
+                'Cannot setup network: {0}'.format(e)
+            ) from e
 
         self.connectivity_url = connectivity_url
         self.interface = interface
@@ -990,11 +1030,11 @@ class EphemeralIPv4Network(object):
     def __exit__(self, excp_type, excp_value, excp_traceback):
         """Teardown anything we set up."""
         for cmd in self.cleanup_cmds:
-            util.subp(cmd, capture=True)
+            subp.subp(cmd, capture=True)
 
     def _delete_address(self, address, prefix):
         """Perform the ip command to remove the specified address."""
-        util.subp(
+        subp.subp(
             ['ip', '-family', 'inet', 'addr', 'del',
              '%s/%s' % (address, prefix), 'dev', self.interface],
             capture=True)
@@ -1006,11 +1046,11 @@ class EphemeralIPv4Network(object):
             'Attempting setup of ephemeral network on %s with %s brd %s',
             self.interface, cidr, self.broadcast)
         try:
-            util.subp(
+            subp.subp(
                 ['ip', '-family', 'inet', 'addr', 'add', cidr, 'broadcast',
                  self.broadcast, 'dev', self.interface],
                 capture=True, update_env={'LANG': 'C'})
-        except util.ProcessExecutionError as e:
+        except subp.ProcessExecutionError as e:
             if "File exists" not in e.stderr:
                 raise
             LOG.debug(
@@ -1018,7 +1058,7 @@ class EphemeralIPv4Network(object):
                 self.interface, self.ip)
         else:
             # Address creation success, bring up device and queue cleanup
-            util.subp(
+            subp.subp(
                 ['ip', '-family', 'inet', 'link', 'set', 'dev', self.interface,
                  'up'], capture=True)
             self.cleanup_cmds.append(
@@ -1035,7 +1075,7 @@ class EphemeralIPv4Network(object):
             via_arg = []
             if gateway != "0.0.0.0/0":
                 via_arg = ['via', gateway]
-            util.subp(
+            subp.subp(
                 ['ip', '-4', 'route', 'add', net_address] + via_arg +
                 ['dev', self.interface], capture=True)
             self.cleanup_cmds.insert(
@@ -1045,20 +1085,20 @@ class EphemeralIPv4Network(object):
     def _bringup_router(self):
         """Perform the ip commands to fully setup the router if needed."""
         # Check if a default route exists and exit if it does
-        out, _ = util.subp(['ip', 'route', 'show', '0.0.0.0/0'], capture=True)
+        out, _ = subp.subp(['ip', 'route', 'show', '0.0.0.0/0'], capture=True)
         if 'default' in out:
             LOG.debug(
                 'Skip ephemeral route setup. %s already has default route: %s',
                 self.interface, out.strip())
             return
-        util.subp(
+        subp.subp(
             ['ip', '-4', 'route', 'add', self.router, 'dev', self.interface,
              'src', self.ip], capture=True)
         self.cleanup_cmds.insert(
             0,
             ['ip', '-4', 'route', 'del', self.router, 'dev', self.interface,
              'src', self.ip])
-        util.subp(
+        subp.subp(
             ['ip', '-4', 'route', 'add', 'default', 'via', self.router,
              'dev', self.interface], capture=True)
         self.cleanup_cmds.insert(

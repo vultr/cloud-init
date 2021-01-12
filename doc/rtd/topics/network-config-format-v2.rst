@@ -50,9 +50,8 @@ currently being defined.
 There are two physically/structurally different classes of device definitions,
 and the ID field has a different interpretation for each:
 
-Physical devices
-
-:   (Examples: ethernet, wifi) These can dynamically come and go between
+Physical devices (Examples: ethernet, wifi):
+    These can dynamically come and go between
     reboots and even during runtime (hotplugging). In the generic case, they
     can be selected by ``match:`` rules on desired properties, such as
     name/name pattern, MAC address, driver, or device paths. In general these
@@ -69,9 +68,8 @@ Physical devices
     which is only being used  for references from definitions of compound
     devices in the config.
 
-Virtual devices
-
-:  (Examples: veth, bridge, bond) These are fully under the control of the
+Virtual devices (Examples: veth, bridge, bond):
+   These are fully under the control of the
    config file(s) and the network stack. I. e. these devices are being created
    instead of matched. Thus ``match:`` and ``set-name:`` are not applicable for
    these, and the ID field is the name of the created virtual device.
@@ -96,7 +94,16 @@ NetworkManager does not.
 
 **macaddress**: *<(scalar)>*
 
-Device's MAC address in the form "XX:XX:XX:XX:XX:XX". Globs are not allowed.
+Device's MAC address in the form XX:XX:XX:XX:XX:XX. Globs are not allowed.
+
+.. note::
+
+  MAC addresses must be strings. As MAC addresses which consist of only the
+  digits 0-9 (i.e. no hex a-f) can be interpreted as a base 60 integer per
+  the `YAML 1.1 spec`_ it is best practice to quote all MAC addresses to ensure
+  they are parsed as strings regardless of value.
+
+.. _YAML 1.1 spec: https://yaml.org/type/int.html
 
 **driver**: *<(scalar)>*
 
@@ -460,7 +467,7 @@ This is a complex example which shows most available features: ::
       # opaque ID for physical interfaces, only referred to by other stanzas
       id0:
         match:
-          macaddress: 00:11:22:33:44:55
+          macaddress: '00:11:22:33:44:55'
         wakeonlan: true
         dhcp4: true
         addresses:

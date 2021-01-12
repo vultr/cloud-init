@@ -14,7 +14,7 @@ Resolv Conf
 This module is intended to manage resolv.conf in environments where early
 configuration of resolv.conf is necessary for further bootstrapping and/or
 where configuration management such as puppet or chef own dns configuration.
-As Debian/Ubuntu will, by default, utilize resovlconf, and similarly RedHat
+As Debian/Ubuntu will, by default, utilize resolvconf, and similarly RedHat
 will use sysconfig, this module is likely to be of little use unless those
 are configured correctly.
 
@@ -30,7 +30,7 @@ are configured correctly.
 
 **Module frequency:** per instance
 
-**Supported distros:** fedora, rhel, sles
+**Supported distros:** alpine, fedora, rhel, sles
 
 **Config keys**::
 
@@ -55,7 +55,7 @@ LOG = logging.getLogger(__name__)
 
 frequency = PER_INSTANCE
 
-distros = ['fedora', 'opensuse', 'rhel', 'sles']
+distros = ['alpine', 'fedora', 'opensuse', 'rhel', 'sles']
 
 
 def generate_resolv_conf(template_fn, params, target_fname="/etc/resolv.conf"):

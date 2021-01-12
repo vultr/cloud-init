@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import shutil
+import subprocess
 import sys
 
 UNRELEASED = "UNRELEASED"
@@ -24,6 +25,7 @@ def find_root():
 if "avoid-pep8-E402-import-not-top-of-file":
     # Use the util functions from cloudinit
     sys.path.insert(0, find_root())
+    from cloudinit import subp
     from cloudinit import util
     from cloudinit import temp_utils
     from cloudinit import templater
@@ -53,27 +55,21 @@ def run_helper(helper, args=None, strip=True):
     if args is None:
         args = []
     cmd = [util.abs_join(find_root(), 'tools', helper)] + args
-    (stdout, _stderr) = util.subp(cmd)
+    (stdout, _stderr) = subp.subp(cmd)
     if strip:
         stdout = stdout.strip()
     return stdout
 
 
-def write_debian_folder(root, templ_data, is_python2, cloud_util_deps):
+def write_debian_folder(root, templ_data, cloud_util_deps):
     """Create a debian package directory with all rendered template files."""
     print("Creating a debian/ folder in %r" % (root))
-    if is_python2:
-        pyver = "2"
-        python = "python"
-    else:
-        pyver = "3"
-        python = "python3"
 
     deb_dir = util.abs_join(root, 'debian')
 
     # Just copy debian/ dir and then update files
     pdeb_d = util.abs_join(find_root(), 'packages', 'debian')
-    util.subp(['cp', '-a', pdeb_d, deb_dir])
+    subp.subp(['cp', '-a', pdeb_d, deb_dir])
 
     # Fill in the change log template
     templater.render_to_file(util.abs_join(find_root(),
@@ -83,30 +79,55 @@ def write_debian_folder(root, templ_data, is_python2, cloud_util_deps):
 
     # Write out the control file template
     reqs_output = run_helper(
-        'read-dependencies',
-        args=['--distro', 'debian', '--python-version', pyver])
+        'read-dependencies', args=['--distro', 'debian'])
     reqs = reqs_output.splitlines()
     test_reqs = run_helper(
         'read-dependencies',
         ['--requirements-file', 'test-requirements.txt',
-         '--system-pkg-names', '--python-version', pyver]).splitlines()
+         '--system-pkg-names']).splitlines()
 
     requires = ['cloud-utils | cloud-guest-utils'] if cloud_util_deps else []
     # We consolidate all deps as Build-Depends as our package build runs all
     # tests so we need all runtime dependencies anyway.
     # NOTE: python package was moved to the front after debuild -S would fail with
     # 'Please add apropriate interpreter' errors (as in debian bug 861132)
-    requires.extend([python] + reqs + test_reqs)
+    requires.extend(['python3'] + reqs + test_reqs)
+    if templ_data['debian_release'] == 'xenial':
+        requires.append('python3-pytest-catchlog')
     templater.render_to_file(util.abs_join(find_root(),
                                            'packages', 'debian', 'control.in'),
                              util.abs_join(deb_dir, 'control'),
-                             params={'build_depends': ','.join(requires),
-                                     'python': python})
+                             params={'build_depends': ','.join(requires)})
 
-    templater.render_to_file(util.abs_join(find_root(),
-                                           'packages', 'debian', 'rules.in'),
-                             util.abs_join(deb_dir, 'rules'),
-                             params={'python': python, 'pyver': pyver})
+
+def write_debian_folder_from_branch(root, templ_data, branch):
+    """Import a debian package directory from a branch."""
+    print("Importing debian/ from branch %s to %s" % (branch, root))
+
+    p_dumpdeb = subprocess.Popen(
+        ["git", "archive", branch, "debian"], stdout=subprocess.PIPE
+    )
+    subprocess.check_call(
+        ["tar", "-v", "-C", root, "-x"],
+        stdin=p_dumpdeb.stdout
+    )
+
+    print("Adding new entry to debian/changelog")
+    full_deb_version = (
+        templ_data["version_long"] + "-1~bddeb" + templ_data["release_suffix"]
+    )
+    subp.subp(
+        [
+            "dch",
+            "--distribution",
+            templ_data["debian_release"],
+            "--newversion",
+            full_deb_version,
+            "--controlmaint",
+            "Snapshot build.",
+        ],
+        cwd=root
+    )
 
 
 def read_version():
@@ -150,12 +171,52 @@ def get_parser():
 
     parser.add_argument("--signuser", default=False, action='store',
                         help="user to sign, see man dpkg-genchanges")
+
+    parser.add_argument("--packaging-branch", nargs="?", metavar="BRANCH",
+                        const="ubuntu/devel", type=str,
+                        help=(
+                            "Import packaging from %(metavar)s instead of"
+                            " using the packages/debian/* templates"
+                            " (default: %(const)s)"
+                        ))
+
     return parser
 
 
 def main():
     parser = get_parser()
     args = parser.parse_args()
+
+    if args.packaging_branch:
+        try:
+            subp.subp(
+                [
+                    "git",
+                    "show-ref",
+                    "--quiet",
+                    "--verify",
+                    "refs/heads/" + args.packaging_branch,
+                ]
+            )
+        except subp.ProcessExecutionError:
+            print("Couldn't find branch '%s'." % args.packaging_branch)
+            print("You may need to checkout the branch from the git remote.")
+            return 1
+        try:
+            subp.subp(
+                [
+                    "git",
+                    "cat-file",
+                    "-e",
+                    args.packaging_branch + ":debian/control",
+                ]
+            )
+        except subp.ProcessExecutionError:
+            print(
+                "Couldn't find debian/control in branch '%s'."
+                " Is it a packaging branch?" % args.packaging_branch
+            )
+            return 1
 
     if not args.sign:
         args.debuild_args.extend(['-us', '-uc'])
@@ -203,13 +264,19 @@ def main():
 
         print("Extracting temporary tarball %r" % (tarball))
         cmd = ['tar', '-xvzf', tarball_fp, '-C', tdir]
-        util.subp(cmd, capture=capture)
+        subp.subp(cmd, capture=capture)
 
         xdir = util.abs_join(tdir, "cloud-init-%s" % ver_data['version_long'])
         templ_data.update(ver_data)
 
-        write_debian_folder(xdir, templ_data, is_python2=args.python2,
-                            cloud_util_deps=args.cloud_utils)
+        if args.packaging_branch:
+            write_debian_folder_from_branch(
+                xdir, templ_data, args.packaging_branch
+            )
+        else:
+            write_debian_folder(
+                xdir, templ_data, cloud_util_deps=args.cloud_utils
+            )
 
         print("Running 'debuild %s' in %r" % (' '.join(args.debuild_args),
                                               xdir))
@@ -217,7 +284,7 @@ def main():
             cmd = ['debuild', '--preserve-envvar', 'INIT_SYSTEM']
             if args.debuild_args:
                 cmd.extend(args.debuild_args)
-            util.subp(cmd, capture=capture)
+            subp.subp(cmd, capture=capture)
 
         link_fn = os.path.join(os.getcwd(), 'cloud-init_all.deb')
         link_dsc = os.path.join(os.getcwd(), 'cloud-init.dsc')
